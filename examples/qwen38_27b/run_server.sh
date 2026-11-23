@@ -19,9 +19,14 @@ if [ "${RADIX:-1}" = 1 ]; then
 else
     CACHE=(--disable-radix-cache)
 fi
+# the prefill graphs below the 2048-token chunk: a prompt's last piece runs the smallest that holds it. 512 fits beside
+# this server's pools with the prefix cache on; the full ladder (512 1024) does not with the float32 GDN state (the
+# recipe's "Prefill tiles"). PREFILL_TILES=2048 compiles the chunk alone.
+PREFILL_TILES=${PREFILL_TILES:-512}
 # paged KV in 512-token pages, prompts prefilled in 2048-token chunks of whole pages
 exec python3 -m sglang.launch_server --model-path "$MODEL_PATH" \
     --tp-size 8 --context-length 16384 --page-size 512 --chunked-prefill-size 2048 \
+    --cuda-graph-bs-prefill $PREFILL_TILES \
     --max-running-requests 4 --max-total-tokens 65536 --mem-fraction-static 0.85 \
     "${CACHE[@]}" --dtype bfloat16 \
     --host "$HOST" --port "$PORT" "$@"

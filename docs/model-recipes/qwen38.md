@@ -48,7 +48,7 @@ Aggregated, on the eight NeuronCores of a trn2.3xlarge, with the validated flags
 
 ```bash
 python3 -m sglang.launch_server --model-path /models/Qwen3.8-27B --tp-size 8 \
-  --context-length 16384 --page-size 512 --chunked-prefill-size 2048 \
+  --context-length 16384 --page-size 512 --chunked-prefill-size 2048 --cuda-graph-bs-prefill 512 \
   --max-running-requests 4 --max-total-tokens 65536 --mem-fraction-static 0.85 \
   --radix-cache-backend neuron-chunk --mamba-radix-cache-strategy extra_buffer --mamba-track-interval 2048 \
   --dtype bfloat16 \
@@ -72,6 +72,32 @@ python3 -m sglang.launch_server --model-path /models/Qwen3.8-27B --tp-size 8 \
   | 16 | 32768 | 3.0 GB | serves |
 
   The KV costs about 16 KB per token per core, a request's GDN state about 40 MB per core.
+- **Prefill tiles.** Below the 2048-token chunk the prefill compiles a graph of each KV segment tile it is given, and
+  a prompt's last piece runs the smallest that holds it, so a short prompt does not pay for a whole padded chunk. Both
+  prefill kernels take any multiple of 512 tokens. Without `--cuda-graph-bs-prefill` every tile below the chunk is
+  compiled (512 and 1024); the flag lists the ones to compile. The tiles compete for device memory with the KV pool,
+  the rows and the radix cache's state slots. With the radix cache on at the flags above, the state pool holds 85
+  slots (1.65 GB a core) and 1.47 GB is free after the pools:
+
+  | GDN state | Radix slots | Prefill tiles | Result |
+  | --- | --- | --- | --- |
+  | float32 | 85 | 512, 1024 (no flag) | the prefill program fails to load ("Failed to allocate resource") |
+  | float32 | 85 | 512 (`--cuda-graph-bs-prefill 512`, the flags above) | serves |
+  | float32 | 85 | none (`--cuda-graph-bs-prefill 2048`) | serves: the chunk alone, as before the tiles |
+  | bfloat16 | 168 (the pool's bytes unchanged) | 512, 1024 | the prefill program fails to load |
+  | bfloat16 | 85 (`--max-mamba-cache-size 85`) | 512, 1024 | serves |
+
+  Without the radix cache the state pool is small: 16 rows with a 32768-token pool serve the full ladder in float32.
+- **GDN state dtype.** `--mamba-ssm-dtype bfloat16` stores the GDN state in bf16 (the recurrence still runs in fp32 on
+  chip; the kernels' state DMAs cast on the way in and out), half the bytes a slot. SGLang sizes the radix cache's state
+  pool by bytes, so on its own the flag doubles the slots rather than freeing memory; with `--max-mamba-cache-size 85`
+  it keeps the float32 server's checkpoints in half the memory, which lets the full ladder load beside them:
+
+  ```bash
+  ... --mamba-ssm-dtype bfloat16 --max-mamba-cache-size 85    # in place of --cuda-graph-bs-prefill 512
+  ```
+
+  The state dtype is `float32` (the default) or `bfloat16`; another value is refused at launch.
 - **Page and chunk.** The page is a power of two of at least 128 tokens (512 validated); the chunk is whole pages
   (2048 validated).
 - **Prefix cache.** The radix cache keeps the GDN state at the end of each prefill chunk (the chunk-keyed tree,
@@ -89,18 +115,64 @@ python3 -m sglang.launch_server --model-path /models/Qwen3.8-27B --tp-size 8 \
   a quarter, a half and the whole of the context; a step runs the smallest that holds it. With the flags above that is
   9 decode graphs: the first launch on an empty compile cache took 22 minutes on a trn2.3xlarge, a relaunch with the
   same flags and cache about 6 minutes.
-- **Prefill.** One graph of the chunk and one of each smaller KV segment tile (512 and 1024 at a 2048-token chunk);
-  a prompt's last piece runs the smallest that holds it, so a short prompt does not pay for the whole chunk.
-- `--mamba-ssm-dtype bfloat16` stores the GDN state in bf16 (the recurrence still runs in fp32 on chip), which halves the
-  state pool: 32 rows with the prefill ladder at `--context-length 4096 --max-total-tokens 32768` then load, which they
-  do not with the float32 state. GSM8K is unchanged (0.990).
+- **Prefill.** One graph of the chunk and one of each tile `--cuda-graph-bs-prefill` lists below it (512 with the
+  flags above, see Prefill tiles); without the flag, one of each KV segment tile below the chunk (512 and 1024).
 - `--max-total-tokens` sizes the KV pool, whose page count is a dimension of every graph; state it, so a relaunch finds
   its graphs in the compile cache.
 
 ## Measured results
 
 One trn2.3xlarge, TP8, bf16, the flags above with `--disable-radix-cache` unless a result says the cache was on,
-greedy, an idle host.
+greedy, an idle host. The results after this first part were measured before the prefill tiles, with the chunk alone.
+
+**Prefill tiles and the GDN state dtype.** One server at a time on the same host. On the recipe flags (radix cache
+on, 4 rows, 65536 tokens), a streaming client with random-token prompts and 64 new tokens, 2 runs each:
+
+| Prefill tiles, GDN state | TTFT at 64 to 512 / 1024 / 3072 tokens | TPOT | GSM8K | Radix hits | Batches | Needle |
+| --- | --- | --- | --- | --- | --- | --- |
+| the chunk alone, float32 | 0.65 / 0.65 / 1.27 s | 28.2 ms | 0.990 | 4 of 4 | 16 of 16 | 6 of 6 |
+| 512, float32 (the flags above) | 0.20 / 0.65 / 1.27 s | 28.2 ms | 0.990 | 4 of 4 | not run | not run |
+| 512 and 1024, bfloat16, 85 slots | 0.19 / 0.36 / 0.98 s | 27.7 ms | 0.990 | 4 of 4 | 16 of 16 | 6 of 6 |
+
+Radix hits: the four cases of the prefix cache table below, each the cold run's exact tokens. Needle: a code at 10, 50
+and 90 percent of filler at 2183 and 12158 tokens of prompt. Teacher-forced against Hugging Face on CPU (the five
+prompts below, 24 steps each): 120 of 120 with margin 0 with both tiles and the float32 state (16 rows, 32768 tokens,
+radix off), and 120 of 120 with margin 0 with both tiles and the bfloat16 state on the recipe flags (85 slots).
+
+At 16 rows, a 32768-token pool and the radix cache off (`--context-length 16384 --max-running-requests 16
+--max-total-tokens 32768 --disable-radix-cache`), `sglang.bench_serving` with `random-ids` and `--random-range-ratio
+1`: 4 prompts at 1 client, 64 at 16, 96 at 32. Output tokens/s at 16 clients unless stated:
+
+| Input / output tokens | The chunk alone | 512 and 1024, float32 | 512 and 1024, bfloat16 |
+| --- | --- | --- | --- |
+| 128 / 128, TTFT p50 at 1 client | 646 ms | 199 ms | 192 ms |
+| TPOT p50 at 1 client | 31.7 ms | 31.7 ms | 30.5 ms |
+| 128 / 128 | 125.1 | 222.4 | 243.0 |
+| 128 / 512 | 229.3 | 286.7 | 318.7 |
+| 1024 / 512 | 197.4 | 197.7 | 213.8 |
+| 2048 / 512 | 128.2 | 143.4 | 155.8 |
+| 1024 / 512 at 32 clients (16 queue) | 208.2 | 209.0 | 227.1 |
+| mixed, 410 to 4096 in / 51 to 512 out, 128 prompts | 104.3 | 111.8 | 119.6 |
+| mixed, TPOT p50 / p99 | 89.2 / 139.6 ms | 82.6 / 126.8 ms | 76.7 / 120.6 ms |
+
+`bench_serving`'s 1024-token `random-ids` prompts reach the server as 1046 to 1070 tokens (its prefill log), above
+the 1024 tile, so they run the 2048 chunk on every server; the streaming client's 1024-token prompt above runs the
+1024 tile.
+
+A soak of 20 minutes at 20 clients on each (prompts of 100 to 8000 tokens, 32 to 256 new tokens, 15 percent of the
+streams closed midway): 562, 625 and 661 requests completed, no error on any, median TPOT 117 to 121, 104 to 103 and
+103 to 103 ms from the first to the last 10 minutes, and each server answered correctly afterwards.
+
+With the bfloat16 state, 32 rows at `--context-length 4096 --max-total-tokens 32768` (both tiles) load, at 32
+clients: 355.6, 438.9, 239.8 and 164.4 output tokens/s at 128 / 128, 128 / 512, 1024 / 512 and 2048 / 512, TPOT p50
+69.5, 54.4, 49.3 and 51.0 ms. A 30-minute soak at 40 clients (prompts up to 3000 tokens): 1861 completed, 342
+cancelled, no error; the median TPOT was 108.8 ms in the first 10 minutes and 113.7 ms in the last 10 (not
+investigated), and the server answered correctly afterwards.
+
+Agent-like sessions on the recipe flags (radix on): a 6000-token start, then 10 turns that each append 100 to 500
+tokens and take 64 greedy tokens, the history growing. TTFT of the later turns, median / p90: one session at a time
+0.66 / 1.28 s with the chunk alone and 0.65 / 0.83 s with both tiles and the bfloat16 state (85 slots); 8 sessions 4 at
+a time 1.89 / 3.14 s and 1.26 / 2.50 s (first turns 3.45 and 2.82 s; 129 and 112 s for all 8).
 
 **Accuracy.** Teacher-forced against a Hugging Face reference on CPU in bf16, 24 steps on each of five prompts (5, 867,
 2165, 7779 and 14582 tokens; the last crosses eight prefill chunks): 120 of 120 steps with the same argmax. GSM8K's
