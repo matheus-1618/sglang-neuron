@@ -2,10 +2,11 @@
 """Qwen3.8's GDN recurrent state, on the platform's recurrent-state framework (docs/design/recurrent-state.md).
 
 The state is the same family, the same components and the same physical layout as Qwen3.5's, because the layers run
-the same kernels: per rank, the temporal state ``(v_heads/tp, head_v, head_k)`` float32 stored as the kernels read it
-(``rec_state [rows, 128, vh, 128]``, token-major) and the conv window ``(conv_dim/tp, kernel - 1)`` bfloat16 in
-upstream's q | k | v order. Only the layer ids and the head counts differ, so the pool and its slot operations are
-Qwen3.5's, reused unchanged (``Qwen35StatePool``, ``GdnStateOps``).
+the same kernels: per rank, the temporal state ``(v_heads/tp, head_v, head_k)`` float32 (bfloat16 with
+``--mamba-ssm-dtype bfloat16``) stored as the kernels read it (``rec_state [rows, 128, vh, 128]``, token-major) and the
+conv window ``(conv_dim/tp, kernel - 1)`` bfloat16 in upstream's q | k | v order. Only the layer ids and the head
+counts differ, so the pool and its slot operations are Qwen3.5's, reused unchanged (``Qwen35StatePool``,
+``GdnStateOps``).
 """
 
 from __future__ import annotations
@@ -28,13 +29,16 @@ TEMPORAL_DTYPES = ("float32", "bfloat16")
 
 
 def temporal_dtype(server_args=None) -> str:
-    """The launch's ``--mamba-ssm-dtype``, float32 when unset."""
+    """The launch's ``--mamba-ssm-dtype``, float32 when unset; refuses a dtype the kernels do not store."""
     if server_args is None:
         from sglang.srt.runtime_context import get_server_args
 
         server_args = get_server_args()
     value = str(getattr(server_args, "mamba_ssm_dtype", None) or "float32")
-    return {"bf16": "bfloat16", "fp32": "float32"}.get(value, value)
+    value = {"bf16": "bfloat16", "fp32": "float32"}.get(value, value)
+    if value not in TEMPORAL_DTYPES:
+        raise ValueError(f"Qwen3.8 stores the GDN state in one of {TEMPORAL_DTYPES}; --mamba-ssm-dtype is {value!r}")
+    return value
 
 
 def state_spec(dims: Qwen38Dims, layout: Qwen38Layout, temporal: str = "float32") -> StateSpec:
