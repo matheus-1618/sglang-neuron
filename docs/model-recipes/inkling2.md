@@ -83,6 +83,26 @@ Speed, `sglang.bench_serving`, random 1024-token prompts and 1024 output tokens 
 A conversation turn of 128 tokens on a cached history starts in 0.37 s at 1024, 4096 and 8192 history tokens (cold:
 1.77, 5.94 and 11.52 s).
 
+At a 4k context with more rows (`--context-length 4096 --max-running-requests 8 --cuda-graph-bs-decode 4`, decode
+graphs of 4 and 8 rows, otherwise the same), same benchmark; greedy outputs and radix hits as above:
+
+| Clients | TTFT p50 | TPOT p50 | Output tokens/s |
+| --- | --- | --- | --- |
+| 1 | 1.29 s | 36.9 ms | 26.4 |
+| 2 | 0.98 s | 36.7 ms | 52.5 |
+| 4 | 1.29 s | 37.2 ms | 101.4 |
+| 8 | 5.37 s | 63.0 ms | 101.8 |
+
+One and two clients run in the 4-row graph, whose MoE is the torch gather (the NKI kernel serves up to 2 rows).
+
+Tool calls: with the chat template's tool declarations, the model calls tools in its format (`<|message_model|>` name
+`<|content_invoke_tool_json|>` arguments): three tasks (two parallel weather calls and a difference; an order lookup and
+a sum; a weather call answered in Portuguese) are answered right in 6 of 6 runs (two reasoning efforts), 2 to 3 turns
+each, every later turn starting in 0.37 s on the radix cache. SGLang's `--tool-call-parser inkling` constrains a tool
+call with a `structural_tag` grammar, which the device sampler does not apply: on the device samplers a request with
+`tools` is refused, so the OpenAI tools API needs the `host` sampler (`SGLANG_NEURON_SAMPLER=host` with
+`--disable-overlap-schedule`), not measured here.
+
 ## What the launch refuses
 
 A `--page-size` other than 256 or a chunk that is not whole pages, a `--tp-size` other than 8 on the device, PD
@@ -96,3 +116,4 @@ served), expert parallelism, and a KV cache dtype other than bf16.
   room. The sliding visits keep full-length KV (SGLang's hybrid SWA pool and the radix cache's chunk tree are
   exclusive on this platform).
 - Images and the DSpark draft are not served.
+- The OpenAI tools API (`--tool-call-parser inkling`) needs the host sampler (above).
