@@ -205,6 +205,11 @@ MODELS = {
     ),
     "Qwen3ForCausalLM": ModelSpec(package="sglang_neuron.models.qwen3", kv_cache_dtypes=("auto", "bf16", "bfloat16")),
     "Glm4ForCausalLM": ModelSpec(package="sglang_neuron.models.glm4", kv_cache_dtypes=("auto", "bf16", "bfloat16")),
+    # the looped decoder's 48 layer visits and its conv-state record are KV layers of the host's own pool size
+    # (models/inkling2/sglang_model.py configure_kv_cache); the record at every page's end serves the radix cache
+    "Inkling2LoopForConditionalGeneration": ModelSpec(package="sglang_neuron.models.inkling2",
+                                                      kv_cache_dtypes=("auto", "bf16", "bfloat16"),
+                                                      logical_nc=1),
     "Qwen3MoeForCausalLM": ModelSpec(package="sglang_neuron.models.qwen3_moe",
                                      kv_cache_dtypes=("auto", "bf16", "bfloat16")),
     # the paged giga prefill writes each forward's final GDN state into SGLang's tracking slot, so the chunk-keyed tree
