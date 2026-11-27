@@ -30,6 +30,8 @@ def launch_problems(server_args, checkpoint_config: dict, environ=os.environ) ->
                         "validated)")
     if getattr(server_args, "enable_dp_attention", False):
         problems.append("--enable-dp-attention: the model serves attention TP over all ranks")
+    if int(getattr(server_args, "dcp_size", 1) or 1) > 1:
+        problems.append("--dcp-size above 1: the graphs read each request's pages whole on every rank")
     if int(getattr(server_args, "pp_size", 1) or 1) > 1:
         problems.append("--pp-size above 1: the looped decoder is not split into pipeline stages")
     if getattr(server_args, "speculative_algorithm", None):
