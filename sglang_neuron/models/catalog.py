@@ -117,6 +117,10 @@ class ModelSpec:
     # the launching process, before SGLang resolves the arguments, and every scheduler). Its module-level imports are
     # stdlib only: the launching process imports it before it has decided anything else.
     launch_hooks: str = ""
+    # a module whose register_hf_configs() adds the checkpoint's config types to transformers' AutoConfig, for a
+    # checkpoint newer than the image's transformers: every process registers them when the plugin loads, before SGLang
+    # resolves the arguments (which reads the checkpoint's config); "" for a config transformers knows
+    hf_config_types: str = ""
     # a module of the model's PD KV hand-off, for a decode whose KV lives in its kernel's own caches rather than SGLang's
     # pool (sglang_patches.kernel_kv_handoff: DECODE_HOOKS and PREFILL_HOOKS), "" for upstream's path
     kv_handoff: str = ""
@@ -329,6 +333,13 @@ def checkpoint_quantization(server_args):
 def served(names) -> list:
     """The architectures among ``names`` that the runtime serves."""
     return [name for name in names if name in MODELS]
+
+
+def register_hf_config_types() -> None:
+    """Register every catalog model's own config types (ModelSpec.hf_config_types) with transformers."""
+    for spec in MODELS.values():
+        if spec.hf_config_types:
+            importlib.import_module(spec.hf_config_types).register_hf_configs()
 
 
 def launch_hooks(spec: ModelSpec):
