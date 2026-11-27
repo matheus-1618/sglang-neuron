@@ -215,7 +215,10 @@ MODELS = {
                                                       kv_cache_dtypes=("auto", "bf16", "bfloat16"),
                                                       logical_nc=1,
                                                       launch_hooks="sglang_neuron.models.inkling2.launch",
-                                                      hf_config_types="sglang_neuron.models.inkling2.config"),
+                                                      hf_config_types="sglang_neuron.models.inkling2.config",
+                                                      # the prefill NEFF's scratchpad beside 6.5 GB of weights a core:
+                                                      # the plugin's 3584 MiB page does not fit (Qwen3.8's 1024)
+                                                      scratchpad_page_mb=(("aggregated", 1024),)),
     "Qwen3MoeForCausalLM": ModelSpec(package="sglang_neuron.models.qwen3_moe",
                                      kv_cache_dtypes=("auto", "bf16", "bfloat16")),
     # the paged giga prefill writes each forward's final GDN state into SGLang's tracking slot, so the chunk-keyed tree
