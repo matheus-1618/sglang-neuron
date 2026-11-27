@@ -10,8 +10,8 @@ from transformers import PretrainedConfig
 
 
 class Inkling2LoopTextHFConfig(PretrainedConfig):
-    """The ``text_config`` of ``inkling2_loop``, as stored. Only the keys vLLM reads are named; the rest stay plain
-    attributes. ``sliding_window`` is deliberately not set: the model applies its window itself (``model.py``)."""
+    """The ``text_config`` of ``inkling2_loop``, as stored. Only the keys the model reads are named; the rest stay
+    plain attributes. ``sliding_window`` is deliberately not set: the model applies its window itself (``graph.py``)."""
 
     model_type = "inkling2_loop_text"
 
@@ -22,7 +22,7 @@ class Inkling2LoopTextHFConfig(PretrainedConfig):
 
 class Inkling2LoopHFConfig(PretrainedConfig):
     """``inkling2_loop`` (``Inkling2LoopForConditionalGeneration``). The checkpoint's ``quantization_config``
-    (ModelOpt NVFP4) is dropped: the experts are dequantized to bf16 at load, so vLLM must not quantize."""
+    (ModelOpt NVFP4) is dropped: the experts are dequantized to bf16 at load, so the server must not quantize."""
 
     model_type = "inkling2_loop"
     sub_configs = {"text_config": Inkling2LoopTextHFConfig}

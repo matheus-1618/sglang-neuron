@@ -1,9 +1,10 @@
-# A simple tool-calling agent loop against the local vLLM server (inside the vi container; 127.0.0.1 only).
 # SPDX-License-Identifier: Apache-2.0
-# The server has no tool-call parser for Inkling, so the loop reads the raw output (special tokens kept) and parses
-# the template's format: <|message_model|>NAME<|content_invoke_tool_json|>{"name": ..., "args": {...}}<|end_message|>.
+# A tool-calling agent loop against the local SGLang server (127.0.0.1 only). SGLang's Inkling tool-call parser
+# constrains calls with a grammar the device sampler does not apply, so the loop applies the chat template (with the
+# tools) itself, generates through /generate and parses the template's format from the raw output (special tokens kept):
+# <|message_model|>NAME<|content_invoke_tool_json|>{"name": ..., "args": {...}}<|end_message|>.
 # Tools are simulated. Prints, per task and effort: turns, tool calls made, per-turn TTFT / time / prompt tokens,
-# and the final answer. usage: inkl_agent.py [effort ...]   (effort: default, none, low, medium, high)
+# and the final answer. usage: agent_tools.py [effort ...]   (effort: default, none, low, medium, high)
 import json, re, sys, time, urllib.request
 
 URL = "http://127.0.0.1:30000/generate"

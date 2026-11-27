@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The Inkling 2 Mini text decoder's arithmetic, in plain torch, for one tensor-parallel rank.
 
-Nothing here knows about vLLM: ``model.py`` supplies the weights of this rank, the cached keys and values and the
+Nothing here knows about the server: ``graph.py`` supplies the weights of this rank, the cached keys and values and the
 short-convolution windows, and does the all-reduces. With ``tp_size = 1`` and contiguous caches these functions are
 the whole model, which is how ``test/unit`` checks them against the Hugging Face implementation
 (``transformers.models.inkling2_loop``) on a small random configuration.
@@ -266,7 +266,7 @@ def fuse_projections(p: dict) -> dict:
 
 
 class LayerIO:
-    """What a forward needs from its caller (contiguous caches in tests, the paged KV cache in vLLM).
+    """What a forward needs from its caller (contiguous caches in tests, the paged KV pool in graph.py).
 
     ``positions [B, S]`` are the new tokens' positions; ``kv(c, k, v, window)`` stores this step's keys and values of
     cache layer ``c`` (``[B, hkv, S, d]``) and returns the context ``(k, v, kv_pos)`` the queries may attend: the
