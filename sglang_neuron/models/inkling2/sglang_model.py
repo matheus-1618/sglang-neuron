@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Inkling2LoopForConditionalGeneration: the host SGLang builds for an Inkling-2-Mini checkpoint (models/host.py).
+"""Inkling2LoopForCausalLM: the host SGLang builds for the text view of an Inkling-2-Mini checkpoint (models/host.py;
+tools/inkling2/make_text_view.sh: the checkpoint's text_config as config.json, so SGLang needs no multimodal processor).
 
 It serves the checkpoint's text decoder on the graphs in graph.py, TP over the attention-TP group, one KV head a rank.
 The KV pool holds more layers than the config's 24 (graph.kv_layers: the 48 layer visits of the looped decoder and
@@ -29,7 +30,7 @@ def tp_size() -> int:
     return int(sglang_tree.parallel_config().tp_size)
 
 
-class Inkling2LoopForConditionalGeneration(ModelHost):
+class Inkling2LoopForCausalLM(ModelHost):
     name = "Inkling-2-Mini"
     # the prefill attention is the model's own (ops.attention_core over its window blocks), not the segmented kernel
     segmented_prefill = False
@@ -60,6 +61,25 @@ class Inkling2LoopForConditionalGeneration(ModelHost):
         from sglang_neuron.models.inkling2.graph import Inkling2Graph
 
         return Inkling2Graph(Inkling2Config.from_hf(config, tp_size=tp_size()), phase, PAGE)
+
+    def neuron_compiler_args(self, phase: str, default_args: list) -> list:
+        """Both graphs compile with the transformer model type and the hierarchy splitter, and the decode at -O3: on
+        one core the decoder ran in 21.5 ms with these against 31.4 ms with the platform's defaults (generic model
+        type, split finder), and the decode's 96 all-reduces a step need -O3 (the -O1 modular flow wraps each
+        collective: 43.0 against 29.9 ms a token on the vLLM port). The prefill keeps the platform's -O1 (its TTFT was
+        1.61 s at -O1 against 2.09 s at -O3 there). The device sampler's top-k (top logprobs, topk_topp) keeps the
+        platform's decode arguments."""
+        from sglang_neuron import sampling
+        from sglang_neuron.backend.stack import with_hlo_options
+
+        if phase == "decode" and (sampling.MAX_TOP_LOGPROBS > 0 or sampling.sampler_mode() == "topk_topp"):
+            return super().neuron_compiler_args(phase, default_args)
+        args = with_hlo_options([a for a in default_args if not a.startswith("--model-type")],
+                                drop=("--hierarchy-splitter=",), add=("--hierarchy-splitter=true",))
+        args.append("--model-type=transformer")
+        if phase == "decode":
+            args = [a for a in args if a not in ("-O0", "-O1", "-O2", "-O3")] + ["-O3"]
+        return args
 
     # pools
     def configure_kv_cache(self, configurator, *, pre_model_load_memory):
@@ -127,4 +147,4 @@ class Inkling2LoopForConditionalGeneration(ModelHost):
         logger.info("%s weights loaded onto %s from %s", self.name, device, path)
 
 
-EntryClass = [Inkling2LoopForConditionalGeneration]
+EntryClass = [Inkling2LoopForCausalLM]

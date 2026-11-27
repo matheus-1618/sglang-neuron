@@ -26,6 +26,7 @@ from torch import nn
 
 from sglang_neuron.layers.embedding import VocabDimShardedEmbedding
 from sglang_neuron.mem_cache.kv_cache import KVSpec, LayerSpec
+from sglang_neuron.parallel import collectives as neuron_collectives
 from sglang_neuron.parallel import groups
 from sglang_neuron.utils.checkpoints import SafetensorsCheckpoint
 from sglang_neuron.utils.weight_loader import SafetensorsWeightLoader, pad_to_shape, set_weight_loader
@@ -142,8 +143,8 @@ class LMHead(nn.Module):
 
     def forward(self, h):
         logits = ops.softcap((h @ self.weight).float(), self.cap) + self.vocab_mask
-        if self.gather_output and self.tp_group.world_size > 1:
-            logits = self.tp_group.all_gather(logits, dim=1)
+        if self.gather_output:
+            logits = neuron_collectives.all_gather(self.tp_group, logits, dim=1)
         return logits
 
 
@@ -222,8 +223,8 @@ class PagedIO(ops.LayerIO):
         return ops.moe_gather(x, idx, w, gate_up, down, self.g.config.gate_cap, self.g.config.up_cap)
 
     def all_reduce(self, x):
-        tp = self.g.tp_group
-        return tp.all_reduce(x) if tp.world_size > 1 else x
+        # traceable collectives over SGLang's group (parallel/collectives.py), lowered into the graph
+        return neuron_collectives.all_reduce(self.g.tp_group, x)
 
     def _write_record(self, windows, blk):
         L = self.g.state_layout

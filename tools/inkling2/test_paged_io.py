@@ -80,7 +80,7 @@ def stub(cfg):
     n = G.kv_layers(cfg, BS)
     caches = [tuple(torch.zeros(2, NBLK, 1, BS, cfg.head_dim).unbind(0)) for _ in range(n)]
     g = types.SimpleNamespace(config=cfg, state_layout=G.StateLayout(cfg, BS), moe_kernel=False,
-                              tp_group=types.SimpleNamespace(world_size=1))
+                              tp_group=types.SimpleNamespace(world_size=1, device_group=None))
     g.kv_caches, g.state_caches = caches[:cfg.cache_layers], caches[cfg.cache_layers:]
     return g
 
